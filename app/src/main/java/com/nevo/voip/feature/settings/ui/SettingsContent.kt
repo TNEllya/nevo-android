@@ -12,6 +12,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -25,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,8 +38,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.nevo.voip.core.datastore.NevoPreferences
+import com.nevo.voip.core.update.ReleaseInfo
+import com.nevo.voip.core.update.UpdateState
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -47,12 +55,17 @@ fun SettingsContent(
     val context = LocalContext.current
     val preferences = remember { NevoPreferences(context) }
     val scope = rememberCoroutineScope()
+    val updateViewModel: UpdateViewModel = hiltViewModel()
+    val updateManager = updateViewModel.updateManager
+    val updateState by updateManager.state.collectAsState()
 
     var themeMode by remember { mutableStateOf("") }
     var language by remember { mutableStateOf("") }
     var pttEnabled by remember { mutableStateOf(false) }
     var vadSensitivity by remember { mutableFloatStateOf(0f) }
     var noiseSuppression by remember { mutableFloatStateOf(0f) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var pendingReleaseInfo by remember { mutableStateOf<ReleaseInfo?>(null) }
 
     LaunchedEffect(Unit) {
         themeMode = preferences.themeMode.first()
@@ -60,6 +73,38 @@ fun SettingsContent(
         pttEnabled = preferences.pttEnabled.first()
         vadSensitivity = preferences.vadSensitivity.first().toFloat()
         noiseSuppression = preferences.noiseSuppressionLevel.first().toFloat()
+    }
+
+    if (showUpdateDialog) {
+        UpdateDialog(
+            state = updateState,
+            currentVersion = updateManager.currentVersion(),
+            onDismiss = {
+                showUpdateDialog = false
+                updateManager.resetState()
+            },
+            onDownload = { info ->
+                pendingReleaseInfo = info
+                scope.launch { updateManager.downloadApk(info) }
+            },
+            onInstall = {
+                val state = updateState
+                if (state is UpdateState.Ready) {
+                    updateManager.installApk(state.file)
+                    showUpdateDialog = false
+                    updateManager.resetState()
+                }
+            },
+            onRetry = {
+                val info = pendingReleaseInfo
+                if (info != null) {
+                    scope.launch { updateManager.downloadApk(info) }
+                } else {
+                    scope.launch { updateManager.checkForUpdate() }
+                    pendingReleaseInfo = null
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -183,25 +228,46 @@ fun SettingsContent(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "NEVO VoIP",
-                    style = MaterialTheme.typography.bodyLarge
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "NEVO VoIP",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Version ${updateManager.currentVersion()}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "Build ${updateManager.currentVersionCode()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
+                Button(
+                    onClick = {
+                        showUpdateDialog = true
+                        pendingReleaseInfo = null
+                        scope.launch { updateManager.checkForUpdate() }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                ) {
+                    Icon(
+                        Icons.Filled.SystemUpdate,
+                        contentDescription = null,
+                        modifier = Modifier.padding(end = 6.dp)
+                    )
+                    Text("Check Updates")
+                }
             }
-            Text(
-                text = "Version 1.0.0",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 16.dp)
-            )
-            Text(
-                text = "Build: 1",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                modifier = Modifier.padding(start = 16.dp, bottom = 24.dp)
-            )
+            Spacer(Modifier.height(24.dp))
         }
     }
 }

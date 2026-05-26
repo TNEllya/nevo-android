@@ -118,7 +118,7 @@ class UpdateManager @Inject constructor(
             )
             val latestVersion = info.versionName
             val current = currentVersion()
-            if (latestVersion > current) {
+            if (isNewerVersion(latestVersion, current)) {
                 _state.value = UpdateState.Available(info)
                 info
             } else {
@@ -195,5 +195,18 @@ class UpdateManager @Inject constructor(
 
     fun resetState() {
         _state.value = UpdateState.Idle
+    }
+
+    private fun isNewerVersion(latest: String, current: String): Boolean {
+        val latestParts = latest.split(".").map { it.toIntOrNull() ?: 0 }
+        val currentParts = current.split(".").map { it.toIntOrNull() ?: 0 }
+        val maxLen = maxOf(latestParts.size, currentParts.size)
+        for (i in 0 until maxLen) {
+            val l = latestParts.getOrElse(i) { 0 }
+            val c = currentParts.getOrElse(i) { 0 }
+            if (l > c) return true
+            if (l < c) return false
+        }
+        return false
     }
 }

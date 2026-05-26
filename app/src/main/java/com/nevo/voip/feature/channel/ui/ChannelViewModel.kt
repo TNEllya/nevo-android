@@ -1,18 +1,23 @@
 package com.nevo.voip.feature.channel.ui
 
+import android.content.Context
+import android.content.Intent
+import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.nevo.voip.core.datastore.NevoPreferences
 import com.nevo.voip.core.model.ChannelInfo
 import com.nevo.voip.core.model.UserInfo
 import com.nevo.voip.feature.channel.data.ChannelRepository
 import com.nevo.voip.feature.connection.data.ConnectionRepository
+import com.nevo.voip.feature.voice.data.VoiceEngine
+import com.nevo.voip.service.NevoAudioService
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -38,7 +43,9 @@ data class ChannelUiState(
 @HiltViewModel
 class ChannelViewModel @Inject constructor(
     private val connectionRepository: ConnectionRepository,
-    private val channelRepository: ChannelRepository
+    private val channelRepository: ChannelRepository,
+    private val voiceEngine: VoiceEngine,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChannelUiState())
@@ -49,6 +56,8 @@ class ChannelViewModel @Inject constructor(
 
     private val _isDeafened = MutableStateFlow(false)
     val isDeafened: StateFlow<Boolean> = _isDeafened.asStateFlow()
+
+    private val preferences = NevoPreferences(context)
 
     init {
         viewModelScope.launch {
@@ -115,12 +124,14 @@ class ChannelViewModel @Inject constructor(
                         usersInChannel = channel?.users ?: state.usersInChannel
                     )
                 }
+                startVoiceEngine()
             }
         }
     }
 
     fun leaveChannel() {
         viewModelScope.launch {
+            stopVoiceEngine()
             channelRepository.leaveChannel().onSuccess {
                 _uiState.update { state ->
                     state.copy(
@@ -171,13 +182,48 @@ class ChannelViewModel @Inject constructor(
     }
 
     fun toggleMute() {
-        _isMuted.update { !it }
-        _uiState.update { it.copy(isMuted = _isMuted.value) }
+        val newMuted = !_isMuted.value
+        _isMuted.value = newMuted
+        _uiState.update { it.copy(isMuted = newMuted) }
+        voiceEngine.setMuted(newMuted)
     }
 
     fun toggleDeafen() {
-        _isDeafened.update { !it }
-        _uiState.update { it.copy(isDeafened = _isDeafened.value) }
+        val newDeafened = !_isDeafened.value
+        _isDeafened.value = newDeafened
+        _uiState.update { it.copy(isDeafened = newDeafened) }
+        voiceEngine.setDeafened(newDeafened)
+    }
+
+    private fun startVoiceEngine() {
+        viewModelScope.launch {
+            val host = preferences.lastConnectedHost.first()
+            val port = preferences.lastConnectedPort.first()
+            if (host.isNotBlank() && port > 0) {
+                voiceEngine.setServerInfo(host, port)
+            }
+            startAudioService()
+            voiceEngine.startMicrophone()
+            voiceEngine.startSpeaker(port)
+        }
+    }
+
+    private fun stopVoiceEngine() {
+        voiceEngine.stopAll()
+        stopAudioService()
+    }
+
+    private fun startAudioService() {
+        val intent = Intent(context, NevoAudioService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+    }
+
+    private fun stopAudioService() {
+        context.stopService(Intent(context, NevoAudioService::class.java))
     }
 
     private fun flattenChannels(

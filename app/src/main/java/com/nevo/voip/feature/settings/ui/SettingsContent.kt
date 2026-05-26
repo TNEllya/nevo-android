@@ -1,5 +1,8 @@
 package com.nevo.voip.feature.settings.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -53,6 +56,7 @@ fun SettingsContent(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val activity = remember { context.findActivity() }
     val preferences = remember { NevoPreferences(context) }
     val scope = rememberCoroutineScope()
     val updateViewModel: UpdateViewModel = hiltViewModel()
@@ -150,15 +154,24 @@ fun SettingsContent(
             SettingsSectionHeader("Language")
             LanguageOption("English", language == NevoPreferences.LANGUAGE_EN) {
                 language = NevoPreferences.LANGUAGE_EN
-                scope.launch { preferences.setLanguage(NevoPreferences.LANGUAGE_EN) }
+                scope.launch {
+                    preferences.setLanguage(NevoPreferences.LANGUAGE_EN)
+                    activity?.recreate()
+                }
             }
             LanguageOption("简体中文", language == NevoPreferences.LANGUAGE_ZH_CN) {
                 language = NevoPreferences.LANGUAGE_ZH_CN
-                scope.launch { preferences.setLanguage(NevoPreferences.LANGUAGE_ZH_CN) }
+                scope.launch {
+                    preferences.setLanguage(NevoPreferences.LANGUAGE_ZH_CN)
+                    activity?.recreate()
+                }
             }
             LanguageOption("繁體中文", language == NevoPreferences.LANGUAGE_ZH_TW) {
                 language = NevoPreferences.LANGUAGE_ZH_TW
-                scope.launch { preferences.setLanguage(NevoPreferences.LANGUAGE_ZH_TW) }
+                scope.launch {
+                    preferences.setLanguage(NevoPreferences.LANGUAGE_ZH_TW)
+                    activity?.recreate()
+                }
             }
 
             Spacer(Modifier.height(16.dp))
@@ -316,4 +329,13 @@ private fun LanguageOption(label: String, selected: Boolean, onClick: () -> Unit
             style = MaterialTheme.typography.bodyMedium
         )
     }
+}
+
+private fun Context.findActivity(): Activity? {
+    var ctx = this
+    while (ctx is ContextWrapper) {
+        if (ctx is Activity) return ctx
+        ctx = ctx.baseContext
+    }
+    return null
 }

@@ -1,5 +1,6 @@
 package com.nevo.voip.feature.connection.domain
 
+import android.util.Log
 import com.nevo.voip.core.model.LoginResponse
 import com.nevo.voip.feature.connection.data.ConnectionRepository
 import kotlinx.coroutines.flow.Flow
@@ -39,15 +40,23 @@ class ConnectUseCase @Inject constructor(
             return@flow
         }
 
+        Log.d(TAG, "Connecting to $host:$portInt as $username")
         val result = connectionRepository.connect(host, portInt, username, password)
 
         result.fold(
             onSuccess = { response ->
+                Log.d(TAG, "Connection successful: userId=${response.userInfo?.id}")
                 emit(ConnectionResult.Success(response))
             },
             onFailure = { error ->
-                emit(ConnectionResult.Error(error.message ?: "Connection failed"))
+                val msg = error.message ?: error.javaClass.simpleName
+                Log.e(TAG, "Connection failed: $msg", error)
+                emit(ConnectionResult.Error("Connection failed: $msg"))
             }
         )
+    }
+
+    companion object {
+        private const val TAG = "ConnectUseCase"
     }
 }

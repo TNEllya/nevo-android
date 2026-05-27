@@ -19,6 +19,7 @@ import okio.sink
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -27,6 +28,7 @@ data class ReleaseInfo(
     val versionName: String,
     val description: String,
     val assetUrl: String,
+    val mirrorAssetUrl: String,
     val assetName: String,
     val assetSize: Long,
     val htmlUrl: String
@@ -37,7 +39,7 @@ sealed class UpdateState {
     data object Checking : UpdateState()
     data class Available(val info: ReleaseInfo) : UpdateState()
     data object UpToDate : UpdateState()
-    data class Downloading(val progress: Float) : UpdateState()
+    data class Downloading(val progress: Float, val viaMirror: Boolean = false) : UpdateState()
     data class Ready(val file: File) : UpdateState()
     data class Error(val message: String) : UpdateState()
 }
@@ -49,6 +51,8 @@ class UpdateManager @Inject constructor(
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
@@ -90,11 +94,11 @@ class UpdateManager @Inject constructor(
                 .build()
             val response = client.newCall(request).execute()
             if (!response.isSuccessful) {
-                _state.value = UpdateState.Error("HTTP ${response.code}")
+                _state.value = UpdateState.Error("Server: HTTP ${response.code}")
                 return@withContext null
             }
             val body = response.body?.string() ?: run {
-                _state.value = UpdateState.Error("Empty response")
+                _state.value = UpdateState.Error("Server: empty response")
                 return@withContext null
             }
             val json = JSONObject(body)
@@ -103,15 +107,18 @@ class UpdateManager @Inject constructor(
             val htmlUrl = json.optString("html_url", "")
             val assets = json.getJSONArray("assets")
             if (assets.length() == 0) {
-                _state.value = UpdateState.Error("No assets found")
+                _state.value = UpdateState.Error("No assets in release")
                 return@withContext null
             }
             val asset = assets.getJSONObject(0)
+            val directUrl = asset.getString("browser_download_url")
+            val mirrorUrl = toMirrorUrl(directUrl)
             val info = ReleaseInfo(
                 tagName = tagName,
                 versionName = tagName.removePrefix("v"),
                 description = description,
-                assetUrl = asset.getString("browser_download_url"),
+                assetUrl = directUrl,
+                mirrorAssetUrl = mirrorUrl,
                 assetName = asset.getString("name"),
                 assetSize = asset.getLong("size"),
                 htmlUrl = htmlUrl
@@ -126,29 +133,36 @@ class UpdateManager @Inject constructor(
                 null
             }
         } catch (e: IOException) {
-            _state.value = UpdateState.Error(e.message ?: "Network error")
+            _state.value = UpdateState.Error("Network: ${e.message ?: "unreachable"}")
             null
         }
     }
 
     suspend fun downloadApk(info: ReleaseInfo): File? = withContext(Dispatchers.IO) {
-        _state.value = UpdateState.Downloading(0f)
-        try {
-            val dir = File(context.cacheDir, "updates")
-            dir.mkdirs()
-            val dest = File(dir, "nevo_update_${info.tagName}.apk")
-            if (dest.exists()) dest.delete()
+        _state.value = UpdateState.Downloading(0f, viaMirror = false)
+        val dir = File(context.cacheDir, "updates")
+        dir.mkdirs()
+        val dest = File(dir, "nevo_update_${info.tagName}.apk")
+        if (dest.exists()) dest.delete()
 
-            val request = Request.Builder().url(info.assetUrl).build()
+        val result = tryDownload(dest, info.mirrorAssetUrl, viaMirror = true)
+        if (result != null) return@withContext result
+
+        val directResult = tryDownload(dest, info.assetUrl, viaMirror = false)
+        if (directResult != null) return@withContext directResult
+
+        _state.value = UpdateState.Error("Download failed: all mirrors unreachable")
+        null
+    }
+
+    private fun tryDownload(dest: File, url: String, viaMirror: Boolean): File? {
+        try {
+            _state.value = UpdateState.Downloading(0f, viaMirror = viaMirror)
+            val request = Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                _state.value = UpdateState.Error("Download failed: HTTP ${response.code}")
-                return@withContext null
-            }
-            val body = response.body ?: run {
-                _state.value = UpdateState.Error("Empty body")
-                return@withContext null
-            }
+            if (!response.isSuccessful) return null
+
+            val body = response.body ?: return null
             val total = body.contentLength()
             var downloaded = 0L
             val sink = dest.sink().buffer()
@@ -161,17 +175,17 @@ class UpdateManager @Inject constructor(
                         downloaded += bytesRead
                         if (total > 0) {
                             _state.value = UpdateState.Downloading(
-                                downloaded.toFloat() / total.toFloat()
+                                downloaded.toFloat() / total.toFloat(),
+                                viaMirror = viaMirror
                             )
                         }
                     }
                 }
             }
             _state.value = UpdateState.Ready(dest)
-            dest
-        } catch (e: IOException) {
-            _state.value = UpdateState.Error(e.message ?: "Download error")
-            null
+            return dest
+        } catch (_: IOException) {
+            return null
         }
     }
 
@@ -195,6 +209,10 @@ class UpdateManager @Inject constructor(
 
     fun resetState() {
         _state.value = UpdateState.Idle
+    }
+
+    private fun toMirrorUrl(directUrl: String): String {
+        return "https://ghproxy.com/$directUrl"
     }
 
     private fun isNewerVersion(latest: String, current: String): Boolean {
